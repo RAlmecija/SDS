@@ -2,10 +2,11 @@ package cliente
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
-
+	"os"
 )
 
 // Define una estructura para las credenciales de usuario
@@ -78,4 +79,53 @@ func main() {
 	fmt.Println(credentials)
 }
 
-func Run() {}
+func registrarse() {
+	url := "https://example.com/register"
+
+	// Datos del usuario y contraseña a registrar
+	user := "johndoe"
+	password := "mypassword"
+
+	// Codificamos la contraseña en base64 para enviarla como texto plano
+	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
+
+	// Creamos un cuerpo de solicitud para enviar los datos del usuario y contraseña
+	body := bytes.NewBufferString(fmt.Sprintf("user=%s&pass=%s", user, encodedPassword))
+
+	// Enviamos una solicitud POST a la dirección /register con el cuerpo de la solicitud
+	resp, err := http.Post(url, "application/x-www-form-urlencoded", body)
+	if err != nil {
+		// Error al enviar la solicitud
+		fmt.Println("Error al enviar la solicitud:", err)
+		return
+	}
+
+	// Leemos la respuesta del servidor
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp.Body)
+	responseBody := buf.String()
+
+	fmt.Println(responseBody)
+}
+
+func Run() {
+
+	var opcion int
+	for {
+		fmt.Println("Elija una opción:")
+		fmt.Println("1. Registrarse")
+		fmt.Println("2. Salir")
+
+		fmt.Scanln(&opcion)
+
+		switch opcion {
+		case 1:
+			registrarse()
+		case 2:
+			os.Exit(0)
+		default:
+			fmt.Println("Opción no válida")
+		}
+	}
+
+}

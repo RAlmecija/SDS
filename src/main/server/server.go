@@ -3,15 +3,16 @@ package server
 import (
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"main/util"
 	"net/http"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/scrypt"
-
-	"main/util"
 )
 
 // use forward slash as path separator
@@ -21,6 +22,20 @@ import (
 func chk(e error) {
 	if e != nil {
 		panic(e)
+	}
+}
+
+func connectDB() {
+
+	// Configura los detalles de conexión
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// Prueba la conexión
+	if err := db.Ping(); err != nil {
+		fmt.Println("error al conectarse a la base de datos: %v", err)
 	}
 }
 
@@ -50,11 +65,50 @@ var gUsers map[string]user
 func Run() {
 	gUsers = make(map[string]user)                      // inicializamos mapa de usuarios
 	gPasswordEntries = make(map[string][]passwordEntry) // inicializamos mapa de entradas de contraseñas
-
-	http.HandleFunc("/", handler) // asignamos un handler global
+	connectDB()
+	http.HandleFunc("/", handler)                // asignamos un handler global
+	http.HandleFunc("/register", handleRegister) //asignamos un handler register
 
 	// escuchamos el puerto 10443 con https y comprobamos el error
-	chk(http.ListenAndServeTLS(":10443", "localhost.crt", "localhost.key", nil))
+	chk(http.ListenAndServe(":8080", https))
+}
+
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	// verifica si el método de solicitud es POST
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// extrae los campos de nombre de usuario y contraseña del formulario
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	// comprueba si el nombre de usuario ya está registrado
+	if _, ok := gUsers[username]; ok {
+		response(w, false, "El usuario ya está registrado", nil)
+		return
+	}
+
+	// crea un nuevo usuario con el nombre de usuario y la contraseña especificados
+	u := user{}
+	u.Name = username
+	u.Salt = make([]byte, 16)
+	rand.Read(u.Salt)
+	hash, err := scrypt.Key([]byte(password), u.Salt, 16384, 8, 1, 32)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	u.Hash = hash
+	u.Token = make([]byte, 16)
+	rand.Read(u.Token)
+	u.LastActive = time.Now().Unix()
+
+	// agrega el nuevo usuario al mapa global de usuarios
+	gUsers[u.Name] = u
+
+	response(w, true, "Registro exitoso", nil)
 }
 
 func handler(w http.ResponseWriter, req *http.Request) {
