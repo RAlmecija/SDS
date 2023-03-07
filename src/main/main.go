@@ -30,8 +30,11 @@ pd. Comando openssl para generar el par certificado/clave para localhost:
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
+
+	_ "github.com/go-sql-driver/mysql"
 
 	"main/cliente"
 	"main/server"
@@ -41,6 +44,8 @@ func main() {
 
 	fmt.Println("sdshttp :: un ejemplo de login mediante TLS/HTTP en Go.")
 	s := "Introduce server para funcionalidad de servidor y cliente para funcionalidad de cliente"
+
+	connectDB()
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -56,4 +61,20 @@ func main() {
 	} else {
 		fmt.Println(s)
 	}
+}
+
+func connectDB() {
+
+	// Configura los detalles de conexión
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// Prueba la conexión
+	if err := db.Ping(); err != nil {
+		fmt.Println("error al conectarse a la base de datos: %v", err)
+	}
+
+	fmt.Println(db)
 }
