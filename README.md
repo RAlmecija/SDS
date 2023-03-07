@@ -9,3 +9,7 @@ go mod init <module-name>
 Then, we need to execute:
 
 go mod tidy
+
+## Ejecutar el programa
+
+go run main {server, cliente}
