@@ -15,27 +15,10 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-// use forward slash as path separator
-// escape the backslash with another backslash
-
 // chk comprueba y sale si hay errores (ahorra escritura en programas sencillos)
 func chk(e error) {
 	if e != nil {
 		panic(e)
-	}
-}
-
-func connectDB() {
-
-	// Configura los detalles de conexión
-	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	// Prueba la conexión
-	if err := db.Ping(); err != nil {
-		fmt.Println("error al conectarse a la base de datos: %v", err)
 	}
 }
 
@@ -51,124 +34,12 @@ var gPasswordEntries map[string][]passwordEntry
 
 // mapa con todos los usuarios
 type user struct {
-	Name       string `json:"name"`        // nombre de usuario
-	Hash       []byte `json:"hash"`        // hash de la contraseña
-	Salt       []byte `json:"salt"`        // sal para la contraseña
-	Token      []byte `json:"token"`       // token de sesión
-	LastActive int64  `json:"last_active"` // última vez que se usó el token
-}
-
-// mapa con todos los usuarios
-var gUsers map[string]user
-
-// gestiona el modo servidor
-func Run() {
-	gUsers = make(map[string]user)                      // inicializamos mapa de usuarios
-	gPasswordEntries = make(map[string][]passwordEntry) // inicializamos mapa de entradas de contraseñas
-	connectDB()
-	http.HandleFunc("/", handler)                // asignamos un handler global
-	http.HandleFunc("/register", handleRegister) //asignamos un handler register
-
-	// escuchamos el puerto 10443 con https y comprobamos el error
-	chk(http.ListenAndServe(":8080", https))
-}
-
-func handleRegister(w http.ResponseWriter, r *http.Request) {
-	// verifica si el método de solicitud es POST
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// extrae los campos de nombre de usuario y contraseña del formulario
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	// comprueba si el nombre de usuario ya está registrado
-	if _, ok := gUsers[username]; ok {
-		response(w, false, "El usuario ya está registrado", nil)
-		return
-	}
-
-	// crea un nuevo usuario con el nombre de usuario y la contraseña especificados
-	u := user{}
-	u.Name = username
-	u.Salt = make([]byte, 16)
-	rand.Read(u.Salt)
-	hash, err := scrypt.Key([]byte(password), u.Salt, 16384, 8, 1, 32)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	u.Hash = hash
-	u.Token = make([]byte, 16)
-	rand.Read(u.Token)
-	u.LastActive = time.Now().Unix()
-
-	// agrega el nuevo usuario al mapa global de usuarios
-	gUsers[u.Name] = u
-
-	response(w, true, "Registro exitoso", nil)
-}
-
-func handler(w http.ResponseWriter, req *http.Request) {
-	req.ParseForm()                              // es necesario parsear el formulario
-	w.Header().Set("Content-Type", "text/plain") // cabecera estándar
-
-	switch req.Form.Get("cmd") { // comprobamos comando desde el cliente
-	case "register": // ** registro
-		_, ok := gUsers[req.Form.Get("user")] // ¿existe ya el usuario?
-		if ok {
-			response(w, false, "Usuario ya registrado", nil)
-			return
-		}
-
-		u := user{}
-		u.Name = req.Form.Get("user")                   // nombre
-		u.Salt = make([]byte, 16)                       // sal (16 bytes == 128 bits)
-		rand.Read(u.Salt)                               // la sal es aleatoria
-		password := util.Decode64(req.Form.Get("pass")) // contraseña
-
-		// "hasheamos" la contraseña con scrypt (argon2 es mejor)
-		u.Hash, _ = scrypt.Key(password, u.Salt, 16384, 8, 1, 32)
-
-		u.Token = make([]byte, 16) // token (16 bytes == 128 bits)
-		rand.Read(u.Token)         // el token es aleatorio
-		u.LastActive = time.Now().Unix()
-
-		gUsers[u.Name] = u // añadimos al nuevo usuario al mapa global de usuarios
-		response(w, true, "Usuario registrado con éxito", nil)
-
-	case "login": // ** inicio de sesión
-		u, ok := gUsers[req.Form.Get("user")] // comprobamos si el usuario existe
-		if !ok {
-			response(w, false, "Usuario no registrado", nil)
-			return
-		}
-
-		password := util.Decode64(req.Form.Get("pass")) // contraseña
-		hash, _ := scrypt.Key(password, u.Salt, 16384, 8, 1, 32)
-
-		if !bytes.Equal(hash, u.Hash) { // ¿contraseña correcta?
-			response(w, false, "Contraseña incorrecta", nil)
-			return
-		}
-
-		token := make([]byte, 16) // nuevo token de sesión
-		rand.Read(token)          // aleatorio
-		u.Token = token
-		u.LastActive = time.Now().Unix()
-
-		tokenMap := map[string]string{"token": fmt.Sprintf("%x", token)}
-		tokenBytes, err := json.Marshal(tokenMap)
-		if err != nil {
-			// manejo de error
-		}
-		response(w, true, "Inicio de sesión correcto", tokenBytes)
-
-	default: // ** comando desconocido
-		response(w, false, "Comando desconocido", nil)
-	}
+	Name  string            `json:"name"`  // nombre de usuario
+	Hash  []byte            `json:"hash"`  // hash de la contraseña
+	Salt  []byte            `json:"salt"`  // sal para la contraseña
+	Token []byte            `json:"token"` // token de sesión
+	Seen  time.Time         // última vez que fue visto
+	Data  map[string]string // datos adicionales del usuario
 }
 
 // respuesta del servidor
@@ -178,6 +49,205 @@ type Resp struct {
 	Ok    bool   // true -> correcto, false -> error
 	Msg   string // mensaje adicional
 	Token []byte // token de sesión para utilizar por el cliente
+}
+
+func guardaDatosBD(u user) {
+	// Abrimos una conexión a la base de datos
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		panic(err.Error())
+	}
+	defer db.Close()
+
+	// Preparamos la consulta SQL para insertar el usuario en la tabla users
+	stmt, err := db.Prepare("INSERT INTO users (name, salt, hash, seen, token, private_key, public_key) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		panic(err.Error())
+	}
+	defer stmt.Close()
+
+	// Convertimos la estructura de usuario en valores para la consulta
+	salt := string(u.Salt)
+	hash := string(u.Hash)
+	seen := u.Seen.Format("2006-01-02 15:04:05") // Formato para MySQL DATETIME
+	token := string(u.Token)
+
+	// Ejecutamos la consulta SQL con los valores del usuario
+	_, err = stmt.Exec(u.Name, salt, hash, seen, token, u.Data["private"], u.Data["public"])
+	if err != nil {
+		panic(err.Error())
+	}
+}
+
+func existeUsuarioBD(username string) (bool, error) {
+	// Abrimos una conexión a la base de datos
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE name = ?)", username).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+
+	return exists, nil
+}
+
+func getUsuarioBD(username string) (*user, error) {
+	// Abrimos una conexión a la base de datos
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	var u user
+	var seenTimeStr []uint8
+	err = db.QueryRow("SELECT name, hash, salt, token, seen FROM users WHERE name = ?", username).Scan(&u.Name, &u.Hash, &u.Salt, &u.Token, &seenTimeStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("usuario no encontrado")
+		}
+		return nil, err
+	}
+
+	seenTime, err := time.Parse("2006-01-02 15:04:05", string(seenTimeStr))
+	if err != nil {
+		return nil, err
+	}
+
+	u.Seen = seenTime
+	return &u, nil
+}
+
+func reloadLastSeenUser(username string) {
+	// Abrimos una conexión a la base de datos
+	db, err := sql.Open("mysql", "root:1234@tcp(localhost:3306)/sds")
+	if err != nil {
+		// Si hay un error al abrir la conexión, simplemente retornamos sin hacer nada
+		return
+	}
+	defer db.Close()
+
+	// Actualizamos el campo 'Seen' del usuario con el nombre 'username'
+	_, err = db.Exec("UPDATE users SET seen = ? WHERE name = ?", time.Now(), username)
+	if err != nil {
+		// Si hay un error al actualizar el campo, simplemente retornamos sin hacer nada
+		return
+	}
+}
+
+// gestiona el modo servidor
+func Run() {
+	gPasswordEntries = make(map[string][]passwordEntry) // inicializamos mapa de entradas de contraseñas
+	http.HandleFunc("/", handler)                       // asignamos un handler global
+
+	// escuchamos el puerto 10443 con https y comprobamos el error
+	chk(http.ListenAndServeTLS(":10443", "localhost.crt", "localhost.key", nil))
+}
+
+func handler(w http.ResponseWriter, req *http.Request) {
+	req.ParseForm()                              // es necesario parsear el formulario
+	w.Header().Set("Content-Type", "text/plain") // cabecera estándar
+
+	switch req.Form.Get("cmd") { // comprobamos comando desde el cliente
+	case "register": // ** registro
+		username := req.Form.Get("user")
+		exists, err := existeUsuarioBD(username)
+		if err != nil {
+			response(w, false, "Error al comprobar usuario en BD", nil)
+			return
+		}
+		if exists {
+			response(w, false, "Usuario ya registrado", nil)
+			return
+		}
+
+		u := user{}
+		u.Name = req.Form.Get("user")                   // nombre
+		u.Salt = make([]byte, 16)                       // sal (16 bytes == 128 bits)
+		rand.Read(u.Salt)                               // la sal es aleatoria
+		u.Data = make(map[string]string)                // reservamos mapa de datos de usuario
+		u.Data["private"] = req.Form.Get("prikey")      // clave privada
+		u.Data["public"] = req.Form.Get("pubkey")       // clave pública
+		password := util.Decode64(req.Form.Get("pass")) // contraseña
+
+		// "hasheamos" la contraseña con scrypt (argon2 es mejor)
+		u.Hash, _ = scrypt.Key(password, u.Salt, 16384, 8, 1, 32)
+
+		u.Seen = time.Now()
+		u.Token = make([]byte, 16) // token (16 bytes == 128 bits)
+		rand.Read(u.Token)         // el token es aleatorio
+
+		guardaDatosBD(u)
+		response(w, true, "Usuario registrado con éxito", nil)
+
+	case "login": // ** inicio de sesión
+		username := req.Form.Get("user")
+		exists, err := existeUsuarioBD(username)
+		if err != nil {
+			response(w, false, "Error al comprobar usuario en BD", nil)
+			return
+		}
+		if !exists {
+			response(w, false, "Usuario no registrado", nil)
+			return
+		}
+		u, err := getUsuarioBD(username)
+		if err != nil {
+			response(w, false, err.Error(), nil)
+			return
+		}
+		password := util.Decode64(req.Form.Get("pass")) // contraseña
+		hash, _ := scrypt.Key(password, u.Salt, 16384, 8, 1, 32)
+		if !bytes.Equal(hash, u.Hash) { // ¿contraseña correcta?
+			response(w, false, "Contraseña incorrecta", nil)
+			return
+		} else {
+			u.Seen = time.Now()        // asignamos tiempo de login
+			u.Token = make([]byte, 16) // token (16 bytes == 128 bits)
+			rand.Read(u.Token)         // el token es aleatorio
+			reloadLastSeenUser(u.Name)
+			response(w, true, "Credenciales válidas", u.Token)
+		}
+
+	case "data": // ** obtener datos de usuario
+		username := req.Form.Get("user")
+		exists, err := existeUsuarioBD(username)
+		if err != nil {
+			response(w, false, "Error al comprobar usuario en BD", nil)
+			return
+		}
+		if !exists {
+			response(w, false, "Usuario no registrado", nil)
+			return
+		}
+		u, err := getUsuarioBD(username)
+		if err != nil {
+			response(w, false, "Error al recuperar usuario en BD", nil)
+			return
+		}
+		if (u.Token == nil) || (time.Since(u.Seen).Minutes() > 60) {
+			// sin token o con token expirado
+			response(w, false, "No autentificado", nil)
+			return
+		} else if !bytes.EqualFold(u.Token, util.Decode64(req.Form.Get("token"))) {
+			// token no coincide
+			response(w, false, "No autentificado", nil)
+			return
+		}
+
+		datos, err := json.Marshal(&u.Data)
+		chk(err)
+		u.Seen = time.Now()
+		response(w, true, string(datos), u.Token)
+
+	default: // ** comando desconocido
+		response(w, false, "Comando desconocido", nil)
+	}
 }
 
 // función para escribir una respuesta del servidor

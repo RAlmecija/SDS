@@ -1,11 +1,17 @@
 package cliente
 
 import (
-	"bytes"
-	"encoding/base64"
+	"bufio"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha512"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"main/util"
 	"net/http"
+	"net/url"
 	"os"
 )
 
@@ -27,85 +33,114 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-func main() {
-	// Define la dirección IP y el puerto del servidor
-	serverAddr := "http://localhost:8080"
-
-	// Crea una nueva solicitud HTTP para iniciar sesión
-	loginData := Credential{
-		Username: "admin",
-		Password: "password",
+// chk comprueba y sale si hay errores (ahorra escritura en programas sencillos)
+func chk(e error) {
+	if e != nil {
+		panic(e)
 	}
-	loginJSON, _ := json.Marshal(loginData)
-	loginReq, _ := http.NewRequest("POST", fmt.Sprintf("%s/login", serverAddr), bytes.NewBuffer(loginJSON))
-	loginReq.Header.Set("Content-Type", "application/json")
-
-	// Realiza la solicitud de inicio de sesión al servidor
-	loginResp, err := http.DefaultClient.Do(loginReq)
-	if err != nil {
-		fmt.Println("Error al realizar la solicitud de inicio de sesión:", err)
-		return
-	}
-	defer loginResp.Body.Close()
-
-	// Lee el token de acceso desde la respuesta del servidor
-	var token Token
-	if err := json.NewDecoder(loginResp.Body).Decode(&token); err != nil {
-		fmt.Println("Error al leer el token de acceso:", err)
-		return
-	}
-
-	// Crea una nueva solicitud HTTP para obtener todas las credenciales
-	listReq, _ := http.NewRequest("GET", fmt.Sprintf("%s/credentials", serverAddr), nil)
-	listReq.Header.Set("Content-Type", "application/json")
-	listReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
-
-	// Realiza la solicitud de listar las credenciales al servidor
-	listResp, err := http.DefaultClient.Do(listReq)
-	if err != nil {
-		fmt.Println("Error al realizar la solicitud de listar las credenciales:", err)
-		return
-	}
-	defer listResp.Body.Close()
-
-	// Lee la lista de credenciales desde la respuesta del servidor
-	var credentials []Credential
-	if err := json.NewDecoder(listResp.Body).Decode(&credentials); err != nil {
-		fmt.Println("Error al leer las credenciales:", err)
-		return
-	}
-
-	// Imprime la lista de credenciales en la consola
-	fmt.Println(credentials)
 }
 
 func registrarse() {
-	url := "https://example.com/register"
+	// Pedimos al usuario que ingrese su nombre de usuario y contraseña
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Print("Ingresa tu nombre de usuario: ")
+	scanner.Scan()
+	user := scanner.Text()
+	fmt.Print("Ingresa tu contraseña: ")
+	scanner.Scan()
+	pass := scanner.Text()
 
-	// Datos del usuario y contraseña a registrar
-	user := "johndoe"
-	password := "mypassword"
+	// creamos un cliente especial que no comprueba la validez de los certificados
+	// esto es necesario por que usamos certificados autofirmados (para pruebas)
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
 
-	// Codificamos la contraseña en base64 para enviarla como texto plano
-	encodedPassword := base64.StdEncoding.EncodeToString([]byte(password))
+	// hash con SHA512 de la contraseña
+	keyClient := sha512.Sum512([]byte(pass))
+	keyLogin := keyClient[:32]  // una mitad para el login (256 bits)
+	keyData := keyClient[32:64] // la otra para los datos (256 bits)
 
-	// Creamos un cuerpo de solicitud para enviar los datos del usuario y contraseña
-	body := bytes.NewBufferString(fmt.Sprintf("user=%s&pass=%s", user, encodedPassword))
-
-	// Enviamos una solicitud POST a la dirección /register con el cuerpo de la solicitud
-	resp, err := http.Post(url, "application/x-www-form-urlencoded", body)
+	// generamos un par de claves (privada, pública) para el servidor
+	pkClient, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
-		// Error al enviar la solicitud
-		fmt.Println("Error al enviar la solicitud:", err)
-		return
+		fmt.Printf("Error al generar las claves: %v", err)
+	}
+	pkClient.Precompute() // aceleramos su uso con un precálculo
+
+	pkJSON, err := json.Marshal(&pkClient) // codificamos con JSON
+	if err != nil {
+		fmt.Printf("Error al codificar la clave privada: %v", err)
 	}
 
-	// Leemos la respuesta del servidor
-	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
-	responseBody := buf.String()
+	keyPub := pkClient.Public()           // extraemos la clave pública por separado
+	pubJSON, err := json.Marshal(&keyPub) // y codificamos con JSON
+	if err != nil {
+		fmt.Printf("Error al codificar la clave pública: %v", err)
+	}
 
-	fmt.Println(responseBody)
+	// ** ejemplo de registro
+	data := url.Values{} // estructura para contener los valores
+	data.Set("cmd", "register")
+	data.Set("user", user)
+	data.Set("pass", util.Encode64(keyLogin)) // "contraseña" a base64
+
+	// comprimimos y codificamos la clave pública
+	data.Set("pubkey", util.Encode64(util.Compress(pubJSON)))
+
+	// comprimimos, ciframos y codificamos la clave privada
+	data.Set("prikey", util.Encode64(util.Encrypt(util.Compress(pkJSON), keyData)))
+
+	r, err := client.PostForm("https://localhost:10443", data) // enviamos por POST
+	if err != nil {
+		fmt.Printf("Error al enviar la solicitud al servidor: %v", err)
+	}
+	io.Copy(os.Stdout, r.Body) // mostramos el cuerpo de la respuesta (es un reader)
+	r.Body.Close()             // hay que cerrar el reader del body
+	fmt.Println()
+}
+
+func login() {
+	// Pedimos al usuario que ingrese su nombre de usuario y contraseña
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Print("Ingresa tu nombre de usuario: ")
+	scanner.Scan()
+	user := scanner.Text()
+	fmt.Print("Ingresa tu contraseña: ")
+	scanner.Scan()
+	pass := scanner.Text()
+
+	// creamos un cliente especial que no comprueba la validez de los certificados
+	// esto es necesario por que usamos certificados autofirmados (para pruebas)
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+
+	// hash con SHA512 de la contraseña
+	keyClient := sha512.Sum512([]byte(pass))
+	keyLogin := keyClient[:32] // una mitad para el login (256 bits)
+
+	// generamos un par de claves (privada, pública) para el servidor
+	pkClient, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		fmt.Printf("Error al generar las claves: %v", err)
+	}
+	pkClient.Precompute() // aceleramos su uso con un precálculo
+
+	// ** ejemplo de registro
+	data := url.Values{} // estructura para contener los valores
+	data.Set("cmd", "login")
+	data.Set("user", user)
+	data.Set("pass", util.Encode64(keyLogin))                  // "contraseña" a base64
+	r, err := client.PostForm("https://localhost:10443", data) // enviamos por POST
+	if err != nil {
+		fmt.Printf("Error al enviar la solicitud al servidor: %v", err)
+	}
+	io.Copy(os.Stdout, r.Body) // mostramos el cuerpo de la respuesta (es un reader)
+	r.Body.Close()             // hay que cerrar el reader del body
+	fmt.Println()
 }
 
 func Run() {
@@ -114,7 +149,8 @@ func Run() {
 	for {
 		fmt.Println("Elija una opción:")
 		fmt.Println("1. Registrarse")
-		fmt.Println("2. Salir")
+		fmt.Println("2. Login")
+		fmt.Println("3. Salir")
 
 		fmt.Scanln(&opcion)
 
@@ -122,6 +158,8 @@ func Run() {
 		case 1:
 			registrarse()
 		case 2:
+			login()
+		case 3:
 			os.Exit(0)
 		default:
 			fmt.Println("Opción no válida")

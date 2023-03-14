@@ -39,7 +39,6 @@ import (
 
 func main() {
 
-	fmt.Println("sdshttp :: un ejemplo de login mediante TLS/HTTP en Go.")
 	s := "Introduce server para funcionalidad de servidor y cliente para funcionalidad de cliente"
 
 	if len(os.Args) > 1 {

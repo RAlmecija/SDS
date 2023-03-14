@@ -1,3 +1,6 @@
+/*
+Funciones comunes y utilidades
+*/
 package util
 
 import (
